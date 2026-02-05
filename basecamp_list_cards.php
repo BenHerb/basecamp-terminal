@@ -209,6 +209,27 @@ function create_card_comment(string $baseUrl, array $config, array $card, string
     return false;
 }
 
+function move_card_to_column(string $baseUrl, array $config, array $card, int|string $columnId): bool
+{
+    $cardId = $card['id'] ?? null;
+    if ($cardId === null) {
+        fwrite(STDERR, "Card has no id.\n");
+        return false;
+    }
+
+    $projectId = $config['project_id'];
+    $url = $baseUrl . '/buckets/' . $projectId . '/card_tables/cards/' . $cardId . '/moves.json';
+
+    [$status, $body] = api_post_json_basecamp($url, ['column_id' => (int) $columnId], $config);
+
+    if ($status === 204 || ($status >= 200 && $status < 300)) {
+        return true;
+    }
+
+    fwrite(STDERR, "Move card failed ({$status}): " . substr($body, 0, 300) . "\n");
+    return false;
+}
+
 function api_post_form(string $url, array $formData, array $config): array
 {
     $ch = curl_init($url);
@@ -494,6 +515,37 @@ function interactive_menu(string $baseUrl, array $config): void
                     continue;
                 }
 
+                if ($cardAction['action'] === 'move') {
+                    $card = $cards[$cardAction['index']];
+                    $currentColumnId = $column['id'] ?? null;
+                    $otherColumns = array_values(array_filter($columns, fn ($c) => ($c['id'] ?? null) != $currentColumnId));
+                    if (count($otherColumns) === 0) {
+                        echo "No other columns to move to.\n";
+                        $action = prompt_back_or_quit();
+                        if ($action === 'quit') {
+                            exit(0);
+                        }
+                        continue;
+                    }
+                    $columnLabels = array_map(fn ($c) => column_label($c), $otherColumns);
+                    $destChoice = prompt_choice('Move card to column', $columnLabels, true);
+                    if ($destChoice === 'back' || $destChoice === 'quit') {
+                        if ($destChoice === 'quit') {
+                            exit(0);
+                        }
+                        continue;
+                    }
+                    $destColumn = $otherColumns[$destChoice];
+                    $ok = move_card_to_column($baseUrl, $config, $card, $destColumn['id']);
+                    echo $ok ? "Card moved.\n" : "Failed to move card.\n";
+                    $cards = fetch_cards_for_column($baseUrl, $config, $cardTableId, $column);
+                    $action = prompt_back_or_quit();
+                    if ($action === 'quit') {
+                        exit(0);
+                    }
+                    continue;
+                }
+
                 if ($cardAction['action'] === 'details') {
                     $card = $cards[$cardAction['index']];
                     $details = fetch_card_details($baseUrl, $config, $selectedTable['url'], $card);
@@ -640,6 +692,7 @@ function prompt_cards_menu(array $cards): array
     echo "Enter a number to view details.\n";
     echo "Enter a comma-separated list to add to PRD (e.g., 1,3,5).\n";
     echo "ctx N = add \"Please can I have more context\" comment to card N.\n";
+    echo "mv N = move card N to a different column.\n";
     echo "r = refetch list, b = back, q = quit\n";
 
     while (true) {
@@ -657,6 +710,12 @@ function prompt_cards_menu(array $cards): array
             $idx = (int) $m[1] - 1;
             if ($idx >= 0 && $idx < count($cards)) {
                 return ['action' => 'add_context_comment', 'index' => $idx];
+            }
+        }
+        if (preg_match('/^mv\s+(\d+)$/i', $input, $m)) {
+            $idx = (int) $m[1] - 1;
+            if ($idx >= 0 && $idx < count($cards)) {
+                return ['action' => 'move', 'index' => $idx];
             }
         }
 
